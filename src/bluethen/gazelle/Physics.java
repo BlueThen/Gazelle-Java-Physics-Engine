@@ -1,0 +1,200 @@
+package bluethen.gazelle;
+
+import java.util.ArrayList;
+import java.util.List;
+
+import org.newdawn.slick.BasicGame;
+import org.newdawn.slick.GameContainer;
+import org.newdawn.slick.Graphics;
+import org.newdawn.slick.Input;
+import org.newdawn.slick.KeyListener;
+import org.newdawn.slick.MouseListener;
+import org.newdawn.slick.SlickException;
+import org.newdawn.slick.AppGameContainer;
+
+import bluethen.gazelle.constraints.*;
+import bluethen.gazelle.util.collision.PreserveVelocity;
+import bluethen.gazelle.util.collision.SlidingFriction;
+import bluethen.gazelle.util.tools.*;
+
+//import edu.bsu.slicktest.SimpleTest;
+
+public class Physics extends BasicGame implements MouseListener, KeyListener {
+	PhysicsMediator physics;
+
+	GameContainer app;
+	
+	int mouseX = 0, mouseY = 0;
+	
+	public Physics() {
+		super("Gazelle Physics");
+	}
+
+	public static void main(String[] args) {
+		try {
+			AppGameContainer app = new AppGameContainer(new Physics());
+			app.start();
+		} catch (SlickException e) {
+			e.printStackTrace();
+		}
+	}
+
+	@Override
+	public void render(GameContainer app, Graphics g) throws SlickException {
+		g.clear();
+		Renderer.draw(physics.getConstraintManager(), g);
+	}
+
+	public void createBoxes(int count, float width, float spacing, boolean wrap) {
+		// create a bunch of squares
+		int columns = (int) (app.getWidth() / ((spacing + width)));
+		for (int j = 0; j < count; j++) {
+			float x = width / 2 + spacing + (j % columns) * (width + spacing);
+			float y = width / 2 + spacing + (j / columns) * (width + spacing);
+			ShapeBuilder.createBox(app, physics, x, y, width, width, wrap);
+
+		}
+	}
+	public void createTriangles(int count, float width, float spacing, boolean wrap) {
+		float r = width / (float)Math.sqrt(3);
+		int columns = (int) (app.getWidth() / ((r + (width/(2f*(float)Math.sqrt(3)))) + spacing));
+		for (int i = 0; i < count; i++) {
+			ShapeBuilder.createTriangle(app, physics, r/2 + spacing + (i % columns) * ((r + (width/(2f*(float)Math.sqrt(3)))) + spacing), 
+					app.getHeight()/3 + r/2 + spacing + (i / columns) * (width + spacing), width, wrap);
+		}
+	}
+	public void createCircles(int count, float radius, float spacing, boolean wrap) {
+		int columns = (int)(app.getWidth() / ((spacing + radius*2)));
+		for (int i = 0; i < count; i++) {
+			float x = radius + spacing + (i % columns) * (radius*2+spacing);
+			float y = app.getHeight() - (radius + spacing + (i / columns) * (radius*2+spacing));
+			ShapeBuilder.createCircle(app, physics, x,y, radius, wrap);
+		}
+	}
+	public void wrapTest() {
+		createBoxes(80, 30, 1, true);
+	    createTriangles(80, 30, 1, true);
+	    createCircles(80, 15, 1, true);
+	    physics.gravity = false;
+	}
+	public void lockTest() {
+		Polygon p1 = ShapeBuilder.createBox(app, physics, 60, 60, 30, 30);
+	    Polygon p2 = ShapeBuilder.createBox(app, physics, 300, 60, 30, 30);
+	    
+	    for (int i = 0; i < p1.getVertexCount(); i++) {
+	    	Lock l = new Lock(p1.getVertex(i), p2.getVertex(i), 240, 0);
+	    	physics.addConstraint(l);
+	    }
+	}
+	public void curtainTest() {
+		// Generate a Curtain
+		 List <Body> bodies = new ArrayList<Body>();
+		 int curtainWidth = 40;
+		 int curtainHeight = 30;
+		 int yStart = 25;
+		 int restingDistances = 10;
+		
+		 int midWidth = app.getWidth()/2 - (curtainWidth * restingDistances) /
+		 2;
+		 for (int y = 0; y <= curtainHeight; y++) {
+			 for (int x = 0; x <= curtainWidth; x++) {
+				 Body body = new Body(midWidth + x * restingDistances, y *
+						 			  restingDistances + yStart);
+				 physics.bodyPool.add(body);
+				
+				 //body.setShape(new Rectangle(0,0,0,0));
+				
+				 Circle circle = new Circle(body, 1);
+				 physics.addConstraint(circle);
+				
+				 //body.setShape(new Rectangle(0,0,0,0));
+				
+				 // physics.addBody(body);
+				 Constraint boundary = new Boundary(body, 0,0, app.getWidth(),
+				 app.getHeight());
+				 physics.addConstraint(boundary);
+				 if (x != 0) {
+					 Constraint link = new Link(body, bodies.get(bodies.size() - 1),
+							 					restingDistances);
+					 physics.addConstraint(link);
+				 }
+				 if (y != 0) {
+					 Constraint link = new Link(body, 
+							 					bodies.get((y - 1) * (curtainWidth + 1) + x), 
+							 					restingDistances);
+					 physics.addConstraint(link);
+				 }
+				 if (y == 0) {
+					 Constraint pinned = new Pinned(body);
+					 physics.addConstraint(pinned);
+				 }
+				 bodies.add(body);
+			 }
+		 }
+	}
+	@Override
+	public void init(GameContainer app) throws SlickException {
+		this.app = app;
+		
+		physics = new PhysicsMediator(app.getWidth(), app.getHeight());
+		
+		wrapTest();
+		//lockTest();
+		//curtainTest();
+		 
+	}
+
+	@Override
+	public void update(GameContainer app, int elapsedTime)
+			throws SlickException {
+		physics.update(elapsedTime);
+	}
+
+	
+
+	@Override
+	public void mousePressed(int button, int x, int y) {
+		MouseLocked.mousePressed(physics.getConstraintManager(), button, x, y);
+	}
+
+	@Override
+	public void mouseReleased(int button, int x, int y) {
+		MouseLocked.mouseReleased(button, x, y);
+	}
+
+	@Override
+	public void mouseMoved(int oldx, int oldy, int newx, int newy) {
+		mouseX = newx;
+		mouseY = newy;
+		MouseLocked.mouseMoved(oldx, oldy, newx, newy);
+	}
+
+	@Override
+	public void mouseDragged(int oldx, int oldy, int newx, int newy) {
+		MouseLocked.mouseMoved(oldx, oldy, newx, newy);
+	}
+	
+	@Override
+    public void keyPressed(int key, char c) {
+		// toggle 'g'ravity
+		if (key == Input.KEY_G) {
+			physics.setGravity(!physics.getGravity());
+			System.out.println("gravity now " + (physics.getGravity() ? "on" : "off"));
+		}
+		if (key == Input.KEY_F) {
+			SlidingFriction.enabled = !SlidingFriction.enabled;
+			System.out.println("Sliding friction now " + (SlidingFriction.enabled ? "on" : "off"));
+		}
+		if (key == Input.KEY_V) {
+			PreserveVelocity.enabled = !PreserveVelocity.enabled;
+			System.out.println("Velocity Preservation now " + (PreserveVelocity.enabled ? "on" : "off"));
+		}
+		if (key == Input.KEY_P) {
+			if (MouseLocked.isLocked()) {
+				MouseLocked.pinBody(physics);
+			}
+			System.out.println("Pinned body");
+		}
+    }
+
+}

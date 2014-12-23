@@ -1,0 +1,415 @@
+package bluethen.gazelle.constraints;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+
+import bluethen.gazelle.Body;
+import bluethen.gazelle.Grid;
+import bluethen.gazelle.PhysicsMediator;
+import bluethen.gazelle.util.PMath;
+import bluethen.gazelle.Renderer;
+import bluethen.gazelle.util.collision.Collision;
+import bluethen.gazelle.util.collision.CollisionInfo;
+import bluethen.gazelle.util.collision.PolygonToCircle;
+import bluethen.gazelle.util.collision.PolygonToPolygon;
+import bluethen.gazelle.util.collision.PreserveVelocity;
+import bluethen.gazelle.util.collision.SlidingFriction;
+
+/*
+ * A collection of points, links, edges, etc.
+ */
+public class Polygon implements Constraint, Rigid {
+	List<Body> vertices;
+	List<Edge> edges;
+	// Will not be used for collisions, but will be used for correcting the
+	// shape
+	List<Link> links;
+	
+
+	float slidingFriction = 0.25f;
+	float damping = 0.95f; // for preserveVelocity
+
+	int cellLocation;
+	boolean inGrid = false;
+
+	float boundingRadius = 0;
+	
+	public Polygon() {
+		vertices = new ArrayList<Body>();
+		edges = new ArrayList<Edge>();
+		links = new ArrayList<Link>();
+	}
+
+	public void solveConstraint(Grid grid, boolean preserveVelocity, boolean soft) {
+		grid.updatePosition(this);
+		// get a list of bodies that could possibly collide with this one
+		List<Rigid> rigidBodies = grid.getNearbyBodies(getX(), getY());
+		// Loop through every other rigidBody
+		for (Rigid otherRigid : rigidBodies) {
+			boolean collided = false;
+			if (otherRigid instanceof Circle) {
+				Circle otherCircle = (Circle) otherRigid;
+				
+				collided = PolygonToCircle.resolve(this, otherCircle, preserveVelocity);
+				
+				grid.updatePosition(otherCircle);
+				grid.updatePosition(this);
+			}
+			if (otherRigid instanceof Polygon) {
+				Polygon other = (Polygon) otherRigid;
+				if (other != this) {
+					CollisionInfo collision = PolygonToPolygon.check(this, other);
+					collided = collision.intersects;
+					if (collision.intersects) {
+						float collisionX = collision.normalX * collision.depth;
+						float collisionY = collision.normalY * collision.depth;
+
+						Edge edge = collision.edge;
+						Body point = collision.point;
+
+						// store old velocities for preserveVelocity
+						float oldPointVX = 0, oldPointVY = 0, oldEdgeV1X = 0, oldEdgeV1Y = 0, oldEdgeV2X = 0, oldEdgeV2Y = 0;
+						if (preserveVelocity) {
+							oldPointVX = point.getVelX();
+							oldPointVY = point.getVelY();
+
+							oldEdgeV1X = edge.body1.getVelX();
+							oldEdgeV1Y = edge.body1.getVelY();
+
+							oldEdgeV2X = edge.body2.getVelX();
+							oldEdgeV2Y = edge.body2.getVelY();
+						}
+
+						float t;
+						if (Math.abs(edge.body2.getX() - edge.body1.getX()) > Math.abs(edge.body2.getY() - edge.body1.getY()))
+							t = (point.getX() - collisionX - edge.body1.getX()) / (edge.body2.getX() - edge.body1.getX());
+						else
+							t = (point.getY() - collisionY - edge.body1.getY()) / (edge.body2.getY() - edge.body1.getY());
+
+						if (Float.isInfinite(t)) {
+							t = -1;
+							t = (point.getY() - collisionY - edge.body1.getY());
+						}
+
+						float lambda = 1f / (t * t + (1 - t) * (1 - t));
+
+						float inverseMass1 = 1f / collision.edgeParent.getMass();
+						float inverseMass2 = 1f / collision.pointParent.getMass();
+						float correction1 = (inverseMass1 / (inverseMass1 + inverseMass2));
+						float correction2 = 1-correction1;
+						
+						//System.out.println(correction1 + " " + correction2);
+						
+						// correct edge's position
+						edge.body1.setX(edge.body1.getX() - collisionX * (1 - t) * correction1 * lambda);
+						edge.body1.setY(edge.body1.getY() - collisionY * (1 - t) * correction1 * lambda);
+
+						edge.body2.setX(edge.body2.getX() - collisionX * t * correction1 * lambda);
+						edge.body2.setY(edge.body2.getY() - collisionY * t * correction1 * lambda);
+
+						// Correct point's position
+						point.setX(point.getX() + collisionX * correction2);
+						point.setY(point.getY() + collisionY * correction2);
+						
+//						collision.edgeParent.correctBody();
+//						collision.pointParent.correctBody();
+						if (!soft) {
+							// Preserve velocity
+							if (preserveVelocity) {
+								PreserveVelocity.apply(point, edge, 
+										oldPointVX, oldPointVY, 
+										oldEdgeV1X, oldEdgeV1Y, 
+										oldEdgeV2X, oldEdgeV2Y, t,
+										collision.normalX, collision.normalY,
+										damping); 
+							}
+						}
+
+						SlidingFriction.apply(point, collision.normalX, collision.normalY, slidingFriction);
+						SlidingFriction.apply(edge, -collision.normalX, -collision.normalY, slidingFriction);
+
+						collision.edgeParent.correctBody();
+						collision.pointParent.correctBody();
+						
+						if (soft) {
+							edge.body1.setLastX(edge.body1.getX() - oldEdgeV1X);
+							edge.body1.setLastY(edge.body1.getY() - oldEdgeV1Y);
+
+							edge.body2.setLastX(edge.body2.getX() - oldEdgeV2X);
+							edge.body2.setLastY(edge.body2.getY() - oldEdgeV2Y);
+
+							// Correct point's position
+							point.setLastX(point.getX() - oldPointVX);
+							point.setLastY(point.getY() - oldPointVY);
+						}
+
+						grid.updatePosition(collision.edgeParent);
+						grid.updatePosition(collision.pointParent);
+					}
+				}
+			}
+			if (collided) {
+				for (Body b : otherRigid.getBodies())
+					for (Lock l : b.getLocks())
+						l.solveConstraints(b);
+				for (Body b : this.getBodies())
+					for (Lock l : b.getLocks())
+						l.solveConstraints(b);
+			}
+		}
+	}
+
+	public void calculateBoundingRadius() {
+		for (int i = 0; i < 5; i++)
+			correctBody();
+
+		float x = getX();
+		float y = getY();
+		float maxLen = 0;
+		for (Body v : vertices) {
+			maxLen = Math.max(maxLen, PMath.dist(v.getX(), v.getY(), x, y));
+		}
+
+		boundingRadius = maxLen;
+	}
+
+	public void correctBody() {
+		for (Link link : links)
+			link.solveConstraint();
+		for (Edge edge : edges)
+			edge.solveConstraint();
+		for (Body b : vertices)
+			b.solveLocks();
+	}
+	
+	/*
+	 * Checks to see if this Polygon contains point (x,y) based off of Dean
+	 * Povey's implementation: http://stackoverflow.com/a/8721483
+	 */
+	public boolean contains(float x, float y) {
+		int i, j;
+		boolean result = false;
+		for (i = 0, j = getVertexCount() - 1; i < getVertexCount(); j = i++) {
+			// x < (jX - iX) * (y - iY) / (jY - iY) + iX
+			if ((getVertex(i).getY() > y) != (getVertex(j).getY() > y)
+					&& (x < (getVertex(j).getX() - getVertex(i).getX())
+							* (y - getVertex(i).getY())
+							/ (getVertex(j).getY() - getVertex(i).getY())
+							+ getVertex(i).getX()))
+				result = !result;
+		}
+		return result;
+	}
+
+	public int getVertexCount() {
+		return vertices.size();
+	}
+
+	public int getEdgeCount() {
+		return edges.size();
+	}
+	public boolean containsEdge (Edge e) {
+		return edges.contains(e);
+	}
+
+	public Edge getEdge(int i) {
+		return edges.get(i);
+	}
+	public List<Edge> getEdges() {
+		return edges;
+	}
+	public void addEdge(Edge e) {
+		e.setPartOfPolygon(true);
+		edges.add(e);
+		
+		addVertex(e.getBody1());
+		addVertex(e.getBody2());
+	}
+	public void removeEdge(Edge e) {
+		if (edges.contains(e)) {
+			e.setPartOfPolygon(false);
+			edges.remove(e);
+			
+			removeVertex(e.getBody1());
+			removeVertex(e.getBody2());
+			
+		}
+	}
+	
+	
+	public int getLinkCount() {
+		return links.size();
+	}
+	public boolean containsLink (Link l) {
+		return links.contains(l);
+	}
+
+	public Link getLink(int i) {
+		return links.get(i);
+	}
+	public List<Link> getLinks() {
+		return links;
+	}
+	public void addLink(Link l) {
+		links.add(l);
+		
+		addVertex(l.getBody1());
+		addVertex(l.getBody2());
+	}
+	public void removeLink(Link l) {
+		if (links.contains(l)) {
+			links.remove(l);
+			
+			removeVertex(l.getBody1());
+			removeVertex(l.getBody2());
+			
+		}
+	}
+	
+	public Body getVertex(int i) {
+		return vertices.get(i);
+	}
+	
+	private void addVertex(Body b) {
+		if (!vertices.contains(b)) {
+			vertices.add(b);
+		}
+	}
+
+	private void removeVertex(Body b) {
+		vertices.remove(b);
+	}
+	public float getX() {
+		float x = 0;
+		float totalMass = 0;
+		for (Body b : vertices) {
+			totalMass += b.getMass();
+			x += b.getX() * b.getMass();
+		}
+		return x / totalMass;
+	}
+
+	public float getY() {
+		float y = 0;
+		float totalMass = 0;
+		for (Body b : vertices) {
+			totalMass += b.getMass();
+			y += b.getY() * b.getMass();
+		}
+		return y / totalMass;		
+	}
+
+	public List<Body> getVertices() {
+		return vertices;
+	}
+
+	// Find the distance from the center and the farthest point
+	public float getBoundingRadius() {
+		return boundingRadius;
+	}
+	
+	// find total mass
+	public float getMass() {
+		float totalMass = 0;
+		for (Body b : vertices) 
+			totalMass += b.getMass();
+		return totalMass;
+	}
+	
+	public boolean isInGrid() {
+		return inGrid;
+	}
+
+	public void setCell(int cell) {
+		inGrid = true;
+		cellLocation = cell;
+	}
+
+	public int getCell() {
+		return cellLocation;
+	}
+
+	@Override
+	public Body[] getBodies() {
+		Body[] barr = new Body[getVertexCount()];
+		for (int i = 0; i < getVertexCount(); i++) {
+			barr[i] = getVertex(i);
+		}
+		return barr;
+	}
+	
+	public void destroySelf (PhysicsMediator physics) {
+		// destroy constraints
+		for (Edge e : edges)
+			physics.removeConstraint(e);
+		for (Link l : links)
+			physics.removeConstraint(l);
+		// destroy bodies
+		for (Body b : vertices)
+			physics.removeBody(b);
+		// destroy self
+		physics.removeConstraint(this);
+	}
+	
+	// Creates a copy of all of its parts
+	// bodies included
+	public Polygon clone (PhysicsMediator physics) {
+		Polygon clone = new Polygon();
+		
+		// copy primitives
+		clone.slidingFriction = slidingFriction;
+		clone.damping = damping;
+		clone.boundingRadius = boundingRadius;
+		
+		// cloning the edges and links...
+		// first replicate all the bodies
+		// map all of this polygon's bodies to the clone's
+		// link/edge relevant bodies together
+
+		Map<Body,Body> bodyMap = new HashMap<Body,Body>();
+		
+		for (Body b : vertices) 
+			bodyMap.put(b, b.clone(physics));
+		
+		
+		for (Body b : vertices) {
+			// We must loop edges and links backwards so the constraint solve
+			// doesn't handle it differently
+			// (correcting the last edge over the first might mess things up)
+			for (int j = b.getEdges().size()-1; j >= 0; j--) { 
+				Edge e = b.getEdges().get(j);
+				
+				Body clone1 = bodyMap.get(e.getBody1());
+				Body clone2 = bodyMap.get(e.getBody2());
+				
+				if (!clone1.edgedTo(clone2)) {
+					Edge eClone = new Edge(clone1, clone2, e.getRestingDistance());
+					eClone.setStiffness(e.getStiffness());
+					physics.addConstraint(eClone);
+					clone.addEdge(eClone);
+				}
+			}
+			for (int j = b.getLinks().size()-1; j >= 0; j--) {
+				Link l = b.getLinks().get(j);
+				
+				Body clone1 = bodyMap.get(l.getBody1());
+				Body clone2 = bodyMap.get(l.getBody2());
+				
+				if (!clone1.edgedTo(clone2)) {
+					Link lClone = new Link(clone1, clone2, l.getRestingDistance());
+					lClone.setStiffness(l.getStiffness());
+					lClone.setVisible(l.isVisible());
+					physics.addConstraint(lClone);
+					clone.addLink(lClone);
+				}
+			}
+		}
+		
+		physics.addConstraint(clone);
+		
+		return clone;
+	}
+}

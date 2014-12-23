@@ -1,3 +1,4 @@
 *.jar
 .svn
 .settings
+web
